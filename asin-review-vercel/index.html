@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<title>ASIN Review Checker</title>
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style>
+  :root {
+    --bg: #f6f7f9;
+    --card: #ffffff;
+    --text: #1e2430;
+    --muted: #6b7280;
+    --accent: #d97706;
+    --accent-dark: #b45309;
+    --ok: #16a34a;
+    --fail: #dc2626;
+    --border: #e5e7eb;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    padding: 32px 16px;
+  }
+  .container { max-width: 900px; margin: 0 auto; }
+  h1 { font-size: 22px; margin-bottom: 4px; }
+  p.subtitle { color: var(--muted); margin-top: 0; margin-bottom: 24px; font-size: 14px; }
+  .card {
+    background: var(--card);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 20px;
+    margin-bottom: 20px;
+  }
+  label { display: block; font-size: 13px; font-weight: 600; margin-bottom: 6px; }
+  textarea {
+    width: 100%;
+    min-height: 140px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px;
+    font-family: monospace;
+    font-size: 13px;
+    resize: vertical;
+  }
+  input[type="file"] { margin-top: 8px; font-size: 13px; }
+  .row { display: flex; gap: 24px; flex-wrap: wrap; }
+  .col { flex: 1; min-width: 260px; }
+  button {
+    background: var(--accent);
+    color: white;
+    border: none;
+    padding: 10px 20px;
+    border-radius: 8px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 16px;
+  }
+  button:hover { background: var(--accent-dark); }
+  button:disabled { background: #d1d5db; cursor: not-allowed; }
+  .progress-wrap {
+    background: #e5e7eb;
+    border-radius: 999px;
+    height: 10px;
+    overflow: hidden;
+    margin: 14px 0 6px;
+  }
+  .progress-bar {
+    background: var(--accent);
+    height: 100%;
+    width: 0%;
+    transition: width 0.3s ease;
+  }
+  .progress-label { font-size: 13px; color: var(--muted); }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; margin-top: 12px; }
+  th, td { text-align: left; padding: 8px 10px; border-bottom: 1px solid var(--border); }
+  th { color: var(--muted); font-weight: 600; }
+  .status-ok { color: var(--ok); font-weight: 600; }
+  .status-failed { color: var(--fail); font-weight: 600; }
+  .hidden { display: none; }
+  .error-msg { color: var(--fail); font-size: 13px; margin-top: 8px; }
+  .note { font-size: 12px; color: var(--muted); margin-top: 10px; line-height: 1.5; }
+</style>
+</head>
+<body>
+<div class="container">
+  <h1>ASIN Review Checker</h1>
+  <p class="subtitle">Parent + child variation ASINs paste karo ya upload karo — har ASIN ka rating aur review count check ho jaayega.</p>
+
+  <div class="card">
+    <div class="row">
+      <div class="col">
+        <label for="asins_text">ASINs paste karo (ek line mein ek)</label>
+        <textarea id="asins_text" placeholder="B08XXXXXXX&#10;B08XXXXXXY&#10;B08XXXXXXZ"></textarea>
+      </div>
+      <div class="col">
+        <label for="file_input">...ya file upload karo (.txt ya .csv)</label>
+        <input type="file" id="file_input" accept=".txt,.csv" />
+        <p class="note">CSV mein "ASIN" naam ka column hona chahiye. TXT file mein ek line mein ek ASIN ho.</p>
+      </div>
+    </div>
+    <button id="start_btn" onclick="startCheck()">Check Reviews</button>
+    <div id="error_box" class="error-msg hidden"></div>
+  </div>
+
+  <div class="card hidden" id="progress_card">
+    <div class="progress-label" id="progress_label">Starting...</div>
+    <div class="progress-wrap"><div class="progress-bar" id="progress_bar"></div></div>
+    <p class="note">Har ASIN check hone mein kuch second lagte hain (Amazon block se bachne ke liye delay diya gaya hai) — page ko khula rehne do.</p>
+  </div>
+
+  <div class="card hidden" id="results_card">
+    <button id="download_btn" onclick="downloadExcel()">⬇ Download Excel Report</button>
+    <table>
+      <thead>
+        <tr><th>ASIN</th><th>Title</th><th>Rating</th><th>Reviews</th><th>Status</th></tr>
+      </thead>
+      <tbody id="results_body"></tbody>
+    </table>
+  </div>
+</div>
+
+<script>
+const MIN_DELAY_MS = 1500;
+const MAX_DELAY_MS = 3000;
+let allResults = [];
+let cancelled = false;
+
+function parseAsinsFromText(text) {
+  const parts = text.split(/[\s,;]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
+  return [...new Set(parts)];
+}
+
+function parseAsinsFromCsv(text) {
+  const lines = text.split(/\r?\n/).filter(l => l.trim().length > 0);
+  if (lines.length === 0) return [];
+  const header = lines[0].split(',').map(h => h.trim().toLowerCase());
+  const asinIdx = header.indexOf('asin');
+  if (asinIdx === -1) {
+    return parseAsinsFromText(text);
+  }
+  const asins = lines.slice(1).map(line => {
+    const cols = line.split(',');
+    return (cols[asinIdx] || '').trim().toUpperCase();
+  }).filter(Boolean);
+  return [...new Set(asins)];
+}
+
+async function readFileAsText(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = reject;
+    reader.readAsText(file);
+  });
+}
+
+async function startCheck() {
+  const errorBox = document.getElementById('error_box');
+  errorBox.classList.add('hidden');
+  errorBox.textContent = '';
+
+  const fileInput = document.getElementById('file_input');
+  const textVal = document.getElementById('asins_text').value.trim();
+
+  let asins = [];
+  if (fileInput.files.length > 0) {
+    const file = fileInput.files[0];
+    const content = await readFileAsText(file);
+    asins = file.name.toLowerCase().endsWith('.csv')
+      ? parseAsinsFromCsv(content)
+      : parseAsinsFromText(content);
+  } else if (textVal) {
+    asins = parseAsinsFromText(textVal);
+  }
+
+  if (asins.length === 0) {
+    errorBox.textContent = 'Pehle ASINs paste karo ya file upload karo.';
+    errorBox.classList.remove('hidden');
+    return;
+  }
+  if (asins.length > 300) {
+    errorBox.textContent = '300 se zyada ASINs ek baar mein na daalein — batches mein try karein.';
+    errorBox.classList.remove('hidden');
+    return;
+  }
+
+  cancelled = false;
+  allResults = [];
+  const startBtn = document.getElementById('start_btn');
+  startBtn.disabled = true;
+  startBtn.textContent = 'Checking...';
+  document.getElementById('progress_card').classList.remove('hidden');
+  document.getElementById('results_card').classList.add('hidden');
+  document.getElementById('results_body').innerHTML = '';
+  document.getElementById('progress_bar').style.width = '0%';
+
+  for (let i = 0; i < asins.length; i++) {
+    if (cancelled) break;
+    const asin = asins[i];
+    document.getElementById('progress_label').textContent =
+      `Checking ${i + 1} / ${asins.length}: ${asin}`;
+
+    let result;
+    try {
+      const resp = await fetch(`/api/check?asin=${encodeURIComponent(asin)}`);
+      result = await resp.json();
+    } catch (e) {
+      result = { asin, title: '', rating: '', review_count: '', status: 'FAILED', error: 'Network error' };
+    }
+
+    allResults.unshift(result);
+    renderResults();
+
+    const pct = Math.round(((i + 1) / asins.length) * 100);
+    document.getElementById('progress_bar').style.width = pct + '%';
+
+    if (i < asins.length - 1) {
+      const delay = MIN_DELAY_MS + Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS);
+      await new Promise(res => setTimeout(res, delay));
+    }
+  }
+
+  document.getElementById('progress_label').textContent =
+    `Done — ${allResults.length} / ${asins.length} ASINs checked.`;
+  document.getElementById('results_card').classList.remove('hidden');
+  startBtn.disabled = false;
+  startBtn.textContent = 'Check Reviews';
+}
+
+function renderResults() {
+  const body = document.getElementById('results_body');
+  body.innerHTML = '';
+  allResults.forEach(r => {
+    const tr = document.createElement('tr');
+    const statusClass = r.status === 'OK' ? 'status-ok' : 'status-failed';
+    tr.innerHTML = `
+      <td>${r.asin}</td>
+      <td>${r.title || ''}</td>
+      <td>${r.rating || ''}</td>
+      <td>${r.review_count || ''}</td>
+      <td class="${statusClass}">${r.status}</td>
+    `;
+    body.appendChild(tr);
+  });
+}
+
+function downloadExcel() {
+  const data = [['ASIN', 'Title', 'Rating', 'Review Count', 'Status', 'Error']];
+  allResults.slice().reverse().forEach(r => {
+    data.push([r.asin, r.title || '', r.rating || '', r.review_count || '', r.status, r.error || '']);
+  });
+  const ws = XLSX.utils.aoa_to_sheet(data);
+  ws['!cols'] = [{ wch: 14 }, { wch: 60 }, { wch: 10 }, { wch: 14 }, { wch: 10 }, { wch: 30 }];
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Review Report');
+  const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+  XLSX.writeFile(wb, `review_report_${timestamp}.xlsx`);
+}
+</script>
+</body>
+</html>

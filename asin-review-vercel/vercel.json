@@ -1,0 +1,7 @@
+{
+  "functions": {
+    "api/check.py": {
+      "runtime": "python3.9"
+    }
+  }
+}
