@@ -1,8 +1,3 @@
-bash
-
-cat /home/claude/asin-review-vercel/api/check.py
-Output
-
 """
 Vercel serverless function: checks ONE ASIN per call.
 Called as: /api/check?asin=B08XXXXXXX
