@@ -115,6 +115,7 @@
 
   <div class="card hidden" id="results_card">
     <button id="download_btn" onclick="downloadExcel()">⬇ Download Excel Report</button>
+    <button id="retry_btn" class="hidden" onclick="retryFailed()" style="background:#6b7280;">↻ Retry Failed ASINs</button>
     <table>
       <thead>
         <tr><th>ASIN</th><th>Title</th><th>Rating</th><th>Reviews</th><th>Status</th></tr>
@@ -125,10 +126,69 @@
 </div>
 
 <script>
-const MIN_DELAY_MS = 1500;
-const MAX_DELAY_MS = 3000;
+const MIN_DELAY_MS = 4000;
+const MAX_DELAY_MS = 7000;
 let allResults = [];
 let cancelled = false;
+
+async function checkAsinList(asins) {
+  const startBtn = document.getElementById('start_btn');
+  for (let i = 0; i < asins.length; i++) {
+    if (cancelled) break;
+    const asin = asins[i];
+    document.getElementById('progress_label').textContent =
+      `Checking ${i + 1} / ${asins.length}: ${asin}`;
+
+    let result;
+    try {
+      const resp = await fetch(`/api/check?asin=${encodeURIComponent(asin)}`);
+      result = await resp.json();
+    } catch (e) {
+      result = { asin, title: '', rating: '', review_count: '', status: 'FAILED', error: 'Network error' };
+    }
+
+    // remove any earlier result for this ASIN (used during retry) then add fresh one
+    allResults = allResults.filter(r => r.asin !== asin);
+    allResults.unshift(result);
+    renderResults();
+
+    const pct = Math.round(((i + 1) / asins.length) * 100);
+    document.getElementById('progress_bar').style.width = pct + '%';
+
+    if (i < asins.length - 1) {
+      const delay = MIN_DELAY_MS + Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS);
+      await new Promise(res => setTimeout(res, delay));
+    }
+  }
+  document.getElementById('progress_label').textContent =
+    `Done — checked ${asins.length} ASIN(s).`;
+  document.getElementById('results_card').classList.remove('hidden');
+  startBtn.disabled = false;
+  startBtn.textContent = 'Check Reviews';
+
+  const failedCount = allResults.filter(r => r.status === 'FAILED').length;
+  const retryBtn = document.getElementById('retry_btn');
+  if (failedCount > 0) {
+    retryBtn.textContent = `↻ Retry Failed ASINs (${failedCount})`;
+    retryBtn.classList.remove('hidden');
+  } else {
+    retryBtn.classList.add('hidden');
+  }
+}
+
+async function retryFailed() {
+  const failedAsins = allResults.filter(r => r.status === 'FAILED').map(r => r.asin);
+  if (failedAsins.length === 0) return;
+
+  cancelled = false;
+  const startBtn = document.getElementById('start_btn');
+  startBtn.disabled = true;
+  document.getElementById('retry_btn').classList.add('hidden');
+  document.getElementById('progress_card').classList.remove('hidden');
+  document.getElementById('progress_bar').style.width = '0%';
+
+  await checkAsinList(failedAsins);
+}
 
 function parseAsinsFromText(text) {
   const parts = text.split(/[\s,;]+/).map(s => s.trim().toUpperCase()).filter(Boolean);
@@ -196,40 +256,11 @@ async function startCheck() {
   startBtn.textContent = 'Checking...';
   document.getElementById('progress_card').classList.remove('hidden');
   document.getElementById('results_card').classList.add('hidden');
+  document.getElementById('retry_btn').classList.add('hidden');
   document.getElementById('results_body').innerHTML = '';
   document.getElementById('progress_bar').style.width = '0%';
 
-  for (let i = 0; i < asins.length; i++) {
-    if (cancelled) break;
-    const asin = asins[i];
-    document.getElementById('progress_label').textContent =
-      `Checking ${i + 1} / ${asins.length}: ${asin}`;
-
-    let result;
-    try {
-      const resp = await fetch(`/api/check?asin=${encodeURIComponent(asin)}`);
-      result = await resp.json();
-    } catch (e) {
-      result = { asin, title: '', rating: '', review_count: '', status: 'FAILED', error: 'Network error' };
-    }
-
-    allResults.unshift(result);
-    renderResults();
-
-    const pct = Math.round(((i + 1) / asins.length) * 100);
-    document.getElementById('progress_bar').style.width = pct + '%';
-
-    if (i < asins.length - 1) {
-      const delay = MIN_DELAY_MS + Math.random() * (MAX_DELAY_MS - MIN_DELAY_MS);
-      await new Promise(res => setTimeout(res, delay));
-    }
-  }
-
-  document.getElementById('progress_label').textContent =
-    `Done — ${allResults.length} / ${asins.length} ASINs checked.`;
-  document.getElementById('results_card').classList.remove('hidden');
-  startBtn.disabled = false;
-  startBtn.textContent = 'Check Reviews';
+  await checkAsinList(asins);
 }
 
 function renderResults() {
