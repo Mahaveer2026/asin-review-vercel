@@ -1,3 +1,8 @@
+bash
+
+cat /home/claude/asin-review-vercel/api/check.py
+Output
+
 """
 Vercel serverless function: checks ONE ASIN per call.
 Called as: /api/check?asin=B08XXXXXXX
@@ -11,6 +16,7 @@ calls, updating the progress bar as results come in.
 import json
 import re
 import random
+import time
 from http.server import BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -19,6 +25,7 @@ from bs4 import BeautifulSoup
 
 TIMEOUT = 12
 MAX_RETRIES = 2
+RETRY_DELAY = 2.5  # seconds to wait before retrying within the same call
 
 USER_AGENTS = [
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
@@ -39,7 +46,10 @@ def fetch_asin_data(asin: str):
     }
 
     last_error = ""
-    for _ in range(MAX_RETRIES + 1):
+    for attempt in range(MAX_RETRIES + 1):
+        if attempt > 0:
+            time.sleep(RETRY_DELAY)
+
         try:
             resp = requests.get(url, headers=headers, timeout=TIMEOUT)
         except requests.RequestException as e:
